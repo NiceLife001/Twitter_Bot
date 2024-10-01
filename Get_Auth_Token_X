@@ -1,0 +1,531 @@
+import asyncio
+from curl_cffi.requests import AsyncSession
+import re
+from colorama import Fore
+from loguru import logger
+import sys
+import random
+import json
+
+# Initialize logger
+logger.remove()
+logger.add(sys.stderr, format="{time} {level} {message}", level="INFO")
+
+class RequestHandler:
+    def __init__(self, ua_file):
+        # Load User-Agents from ua.txt file
+        self.user_agents = self.load_user_agents(ua_file)
+        self.header = self.get_random_header()
+
+    def load_user_agents(self, ua_file):
+        """Load user agents from file"""
+        try:
+            with open(ua_file, 'r') as f:
+                user_agents = [line.strip() for line in f.readlines()]
+                if not user_agents:
+                    raise ValueError(f"{Fore.RED}User-Agent file is empty!{Fore.RESET}")
+                return user_agents
+        except FileNotFoundError:
+            logger.error(f"{Fore.RED}User-Agent file not found: {ua_file}{Fore.RESET}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"{Fore.RED}Error reading User-Agent file: {str(e)}{Fore.RESET}")
+            sys.exit(1)
+
+    def get_random_header(self):
+        """Generate a random header with a User-Agent"""
+        user_agent = random.choice(self.user_agents)
+        return {"User-Agent": user_agent}
+
+    async def fetch_url_migrate(self):
+        """Fetch the URL_MIGRATE from the page and retrieve cookies"""
+        url = "https://x.com/i/flow/login"
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}Fetch the URL_MIGRATE....{Fore.RESET}")
+            response = await session.get(url, headers=self.header)
+
+            # Check if response is valid
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Fetch the URL_MIGRATE successful!{Fore.RESET}")
+                
+                # Extract cookies
+                cookies = response.cookies
+                
+                self.guest_id_marketing_1 = cookies.get('guest_id_marketing')
+                self.guest_id_ads_1 = cookies.get('guest_id_ads')
+                self.personalization_id_1 = cookies.get('personalization_id')
+                self.guest_id_1 = cookies.get('guest_id')
+
+                if self.personalization_id_1:
+                    self.personalization_id_1 = f'"{self.personalization_id_1}"'
+
+                html_content = response.text
+
+                # Use regex to find the URL with '/x/migrate?tok=' pattern
+                match = re.search(r"https://twitter\.com/x/migrate\?tok=[\w\d]+", html_content)
+                
+                if match:
+                    url_migrate = match.group(0)
+                    logger.info(f"{Fore.YELLOW}Found URL_MIGRATE: {url_migrate}{Fore.RESET}")
+                    return url_migrate, self.guest_id_marketing_1, self.guest_id_ads_1, self.personalization_id_1, self.guest_id_1
+                else:
+                    logger.error(f"{Fore.RED}URL_MIGRATE not found in the response!{Fore.RESET}")
+                    return None
+            else:
+                logger.error(f"{Fore.RED}Failed to fetch the page. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+    async def fetch_migrate_with_tok(self, url_migrate):
+        """Fetch the URL using the 'tok' parameter from URL_MIGRATE"""
+        match = re.search(r"tok=([\w\d]+)", url_migrate)
+        if match:
+            tok_value = match.group(1)
+            logger.info(f"{Fore.CYAN}Extracted tok: {tok_value}{Fore.RESET}")
+            
+            async with AsyncSession() as session:
+                logger.info(f"{Fore.CYAN}Sending Request URL_MIGRATE...{Fore.RESET}")
+                response = await session.get(url_migrate, headers=self.header, params={'tok': tok_value})
+
+                if response.status_code == 200:
+                    logger.info(f"{Fore.GREEN}Sending Request URL_MIGRATE successful!{Fore.RESET}")
+                    response_content = response.text
+
+                    data_pattern = r'<input type="hidden" name="data" value="([^"]+)"'
+                    data_match = re.search(data_pattern, response_content)
+
+                    if data_match:
+                        secret_value = data_match.group(1)
+                        logger.info(f"{Fore.YELLOW}Extracted secret value: {secret_value}{Fore.RESET}")
+                        return tok_value, secret_value
+                    else:
+                        logger.error(f"{Fore.RED}Secret value not found in the response!{Fore.RESET}")
+                        return None
+                else:
+                    logger.error(f"{Fore.RED}Failed to fetch the migrate URL. Status code: {response.status_code}{Fore.RESET}")
+                    return None
+
+    async def post_to_migrate(self, cookies, tok_value, secret_value):
+        """Send POST request to https://x.com/x/migrate with cookies and form data"""
+        url = "https://x.com/x/migrate"
+        cookie_jar = {
+            'guest_id_marketing': cookies[0],
+            'guest_id_ads': cookies[1],
+            'personalization_id': cookies[2],
+            'guest_id': cookies[3]
+        }
+        
+        form_data = {
+            'tok': tok_value,
+            'data': secret_value
+        }
+        
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}POST Request URL_MIGRATE....{Fore.RESET}")
+            response = await session.post(url, headers=self.header, cookies=cookie_jar, data=form_data)
+
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Request URL_MIGRATE successful!{Fore.RESET}")
+
+                response_cookies = response.cookies
+                self.guest_id_marketing_2 = response_cookies.get('guest_id_marketing')
+                self.guest_id_ads_2 = response_cookies.get('guest_id_ads')
+                self.guest_id_2 = response_cookies.get('guest_id')
+                self.night_mode = response_cookies.get('night_mode')
+
+                
+                return {
+                    'guest_id_marketing': self.guest_id_marketing_2,
+                    'guest_id_ads': self.guest_id_ads_2,
+                    'guest_id': self.guest_id_2,
+                    'night_mode': self.night_mode,
+                    'personalization_id': cookie_jar['personalization_id']
+                }
+            else:
+                logger.error(f"{Fore.RED}Failed to send POST request. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+    async def fetch_login_page(self, cookies):
+        """Fetch the login page with the required cookies and extract gt_value"""
+        url = "https://x.com/i/flow/login?mx=2"
+        params = {'mx': '2'}
+        cookies_mx2 = {
+            "personalization_id": self.personalization_id_1,
+            "guest_id_marketing": self.guest_id_marketing_2,
+            "guest_id_ads": self.guest_id_ads_2,
+            "guest_id": self.guest_id_2,
+            "night_mode": self.night_mode
+        }
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}Get gt_vaule...{Fore.RESET}")
+            response = await session.get(url, headers=self.header, params=params, cookies=cookies_mx2)
+
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Get gt_vaule successful!{Fore.RESET}")
+                response_content = response.text
+
+                gt_pattern = r'(\d{19})'
+                gt_match = re.search(gt_pattern, response_content)
+
+                if gt_match:
+                    gt_value = gt_match.group(1)
+                    logger.info(f"{Fore.YELLOW}Extracted gt_value: {gt_value}{Fore.RESET}")
+                    return gt_value
+                else:
+                    logger.error(f"{Fore.RED}gt_value not found in the response!{Fore.RESET}")
+                    return None
+            else:
+                logger.error(f"{Fore.RED}Failed to fetch the page. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+    async def post_onboarding_task(self, cookies, gt_value):
+        """Send POST request to https://api.x.com/1.1/onboarding/task.json?flow_name=login with JSON body"""
+        url = "https://api.x.com/1.1/onboarding/task.json?flow_name=login"
+        params = {'flow_name': 'login'}
+        cookie_jar = {
+            'guest_id': self.guest_id_2,
+            'night_mode': self.night_mode,
+            'guest_id_marketing': self.guest_id_marketing_1,
+            'guest_id_ads': self.guest_id_1,
+            'personalization_id': self.personalization_id_1,
+            'gt': gt_value
+        }
+
+
+        json_data = {
+            "input_flow_data": {
+                "flow_context": {
+                    "debug_overrides": {},
+                    "start_location": {
+                        "location": "manual_link"
+                    }
+                }
+            },
+            "subtask_versions": {
+                "action_list": 2,
+                "alert_dialog": 1,
+                "app_download_cta": 1,
+                "check_logged_in_account": 1,
+                "choice_selection": 3,
+                "contacts_live_sync_permission_prompt": 0,
+                "cta": 7,
+                "email_verification": 2,
+                "end_flow": 1,
+                "enter_date": 1,
+                "enter_email": 2,
+                "enter_password": 5,
+                "enter_phone": 2,
+                "enter_recaptcha": 1,
+                "enter_text": 5,
+                "enter_username": 2,
+                "generic_urt": 3,
+                "in_app_notification": 1,
+                "interest_picker": 3,
+                "js_instrumentation": 1,
+                "menu_dialog": 1,
+                "notifications_permission_prompt": 2,
+                "open_account": 2,
+                "open_home_timeline": 1,
+                "open_link": 1,
+                "phone_verification": 4,
+                "privacy_options": 1,
+                "security_key": 3,
+                "select_avatar": 4,
+                "select_banner": 2,
+                "settings_list": 7,
+                "show_code": 1,
+                "sign_up": 2,
+                "sign_up_review": 4,
+                "tweet_selection_urt": 1,
+                "update_users": 1,
+                "upload_media": 1,
+                "user_recommendations_list": 4,
+                "user_recommendations_urt": 1,
+                "wait_spinner": 3,
+                "web_modal": 1
+            }
+        }
+
+        login_header = self.header.copy()
+        login_header.update({"Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"})
+        login_header.update({f"x-guest-token": gt_value})
+        self.header_final = login_header
+
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}Get ATT Value...{Fore.RESET}")
+            response = await session.post(url, headers=self.header_final, cookies=cookie_jar, params=params, json=json_data)
+
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Get ATT Value successful!{Fore.RESET}")
+                response_json = response.json()
+                
+                # Debugging the full response
+                
+                # Extract the flow_token
+                self.flow_token = response_json.get("flow_token")
+
+                cookies_token = response.cookies
+                self.att_val = cookies_token.get("att")
+                logger.info(f"{Fore.MAGENTA}Extracted att_val: {self.att_val}{Fore.RESET}")
+
+                return response_json  # Proceed after successful task completion
+            else:
+                logger.error(f"{Fore.RED}Failed to send POST request. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+    async def post_user_identifier0(self):
+            url = "https://api.x.com/1.1/onboarding/task.json"
+            
+            # Ensure gt_value and att_val are properly populated
+            if not self.att_val or not self.flow_token:
+                logger.error(f"{Fore.RED}Missing att_val or flow_token! Cannot proceed!{Fore.RESET}")
+                return None
+
+            cookie_username = {
+                'guest_id': self.guest_id_2,
+                'night_mode': self.night_mode,
+                'guest_id_marketing': self.guest_id_marketing_1,
+                'guest_id_ads': self.guest_id_1,
+                'personalization_id': self.personalization_id_1,
+                'gt': gt_value,
+                'att': self.att_val
+            }
+
+            json_data = {
+                "flow_token": self.flow_token,
+                "subtask_inputs": [
+                    {
+                        "subtask_id": "LoginEnterUserIdentifierSSO",
+                        "settings_list": {
+                            "setting_responses": [
+                                {
+                                    "key": "user_identifier",
+                                    "response_data": {
+                                        "text_data": {
+                                            "result": USERNAME
+                                        }
+                                    }
+                                }
+                            ],
+                            "link": "next_link"
+                        }
+                    }
+                ]
+            }
+            
+            async with AsyncSession() as session:
+                logger.info(f"{Fore.CYAN}Fill Username/Email....{Fore.RESET}")
+                response = await session.post(url, headers=self.header_final, cookies=cookie_username, json=json_data)
+                
+                if response.status_code == 200:
+                    logger.info(f"{Fore.GREEN}Fill Username/Email successful!{Fore.RESET}")
+                    response_json = response.json()
+                    self.new_flow_token = response_json.get("flow_token")
+                    return response_json
+                else:
+                    logger.error(f"{Fore.RED}Failed to send POST request. Status code: {response.status_code}{Fore.RESET}")
+                    return None
+
+
+    async def post_user_identifier1(self):
+        """Send POST request to onboarding/task.json with user identifier"""
+        await self.post_user_identifier0()
+
+        url = "https://api.x.com/1.1/onboarding/task.json"
+        
+
+        cookie_username = {
+            'guest_id': self.guest_id_2,
+            'night_mode': self.night_mode,
+            'guest_id_marketing': self.guest_id_marketing_1,
+            'guest_id_ads': self.guest_id_1,
+            'personalization_id': self.personalization_id_1,
+            'gt': gt_value,
+            'att': self.att_val
+        }
+        json_data = {
+            "flow_token": self.new_flow_token,
+            "subtask_inputs": [
+                {
+                    "subtask_id": "LoginEnterUserIdentifierSSO",
+                    "settings_list": {
+                        "setting_responses": [
+                            {
+                                "key": "user_identifier",
+                                "response_data": {
+                                    "text_data": {
+                                        "result": USERNAME
+                                    }
+                                }
+                            }
+                        ],
+                        "link": "next_link"
+                    }
+                }
+            ]
+        }
+        
+        async with AsyncSession() as session:
+            response = await session.post(url, headers=self.header_final, cookies=cookie_username, json=json_data)
+            
+            if response.status_code == 200:
+                response_json = response.json()
+                self.new_flow_token_password = response_json.get("flow_token")
+                return response_json
+            else:
+                logger.error(f"{Fore.RED}Failed to send POST request. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+    async def post_user_identifier2(self):
+        await self.post_user_identifier1()
+
+        url = "https://api.x.com/1.1/onboarding/task.json"
+        
+
+        cookie_username = {
+            'guest_id': self.guest_id_2,
+            'night_mode': self.night_mode,
+            'guest_id_marketing': self.guest_id_marketing_1,
+            'guest_id_ads': self.guest_id_1,
+            'personalization_id': self.personalization_id_1,
+            'gt': gt_value,
+            'att': self.att_val
+        }
+        json_data = {
+            "flow_token": self.new_flow_token_password,
+            "subtask_inputs": [
+                {
+                    "subtask_id": "LoginEnterPassword",
+                    "enter_password": {
+                        "password": PASSWORD,
+                        "link": "next_link"
+                    }
+                }
+            ]
+        }
+        
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}Fill Password ....{Fore.RESET}")
+            response = await session.post(url, headers=self.header_final, cookies=cookie_username, json=json_data)
+            
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Fill Password .... successful!{Fore.RESET}")
+                response_json = response.json()
+                self.new_flow_token_2FA = response_json.get("flow_token")
+                return response_json
+            else:
+                logger.error(f"{Fore.RED}Failed to send POST request. Status code: {response.status_code}{Fore.RESET}")
+                return None
+            
+
+
+    async def top_secret(self):
+        """Fetch 2FA token from external service"""
+        url = f"https://2fa.live/tok/{TWO_FA}"
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}Get 2FA_Code...{Fore.RESET}")
+            response = await session.get(url, headers=self.header)
+
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Get 2FA_Code successful!{Fore.RESET}")
+                response_json = response.json()
+
+                # Extract the token from the JSON response
+                token_2fa = response_json.get("token")
+                logger.info(f"{Fore.YELLOW}Extracted token_2fa: {token_2fa}{Fore.RESET}")
+                return token_2fa
+            else:
+                logger.error(f"{Fore.RED}Failed to fetch the token. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+    async def post_user_identifier3(self):
+        """Send POST request to onboarding/task.json with user identifier"""
+        response_data_2 = await self.post_user_identifier2()
+        if not response_data_2:
+            logger.error("No response data from post_user_identifier2. Exiting...")
+            return None
+
+        url = "https://api.x.com/1.1/onboarding/task.json"
+        
+        # Fetch the 2FA token
+        token_2fa = await self.top_secret()
+        if not token_2fa:
+            logger.error(f"{Fore.RED}Failed to retrieve 2FA token. Exiting...{Fore.RESET}")
+            return None
+        
+        cookie_username = {
+            'guest_id': self.guest_id_2,
+            'night_mode': self.night_mode,
+            'guest_id_marketing': self.guest_id_marketing_1,
+            'guest_id_ads': self.guest_id_1,
+            'personalization_id': self.personalization_id_1,
+            'gt': gt_value,  # Ensure this is correctly set earlier in the code
+            'att': self.att_val
+        }
+
+        json_data = {
+            "flow_token": self.new_flow_token_2FA,
+            "subtask_inputs": [
+                {
+                    "subtask_id": "LoginTwoFactorAuthChallenge",
+                    "enter_text": {
+                        "text": token_2fa,  # Use the token fetched from top_secret
+                        "link": "next_link"
+                    }
+                }
+            ]
+        }
+
+        async with AsyncSession() as session:
+            logger.info(f"{Fore.CYAN}Get Twitter Auth_Token...{Fore.RESET}")
+            response = await session.post(url, headers=self.header_final, cookies=cookie_username, json=json_data)
+
+            if response.status_code == 200:
+                logger.info(f"{Fore.GREEN}Get Twitter Auth_Token successful!{Fore.RESET}")
+                auth_token = response.cookies.get("auth_token")
+                logger.info(f"{Fore.GREEN}Auth_Token: {auth_token}{Fore.RESET}")
+                response_json = response.json()
+                return response_json
+            else:
+                logger.error(f"{Fore.RED}Failed to send POST request. Status code: {response.status_code}{Fore.RESET}")
+                return None
+
+
+
+if __name__ == "__main__":
+    # Initialize RequestHandler with the path to the ua.txt file
+    ua_file = "ua.txt"  # Path to your file containing User-Agents
+    handler = RequestHandler(ua_file)
+    USERNAME = "YOUR TWITTER USERNAME"
+    PASSWORD = "YOUR TWITTER PASSWORD"
+    TWO_FA = "YOUR TWITTER SECRET CODE"
+    # First fetch the URL_MIGRATE and retrieve cookies
+    url_migrate, guest_id_marketing, guest_id_ads, personalization_id, guest_id = asyncio.run(handler.fetch_url_migrate())
+
+    # If URL_MIGRATE is found, proceed to fetch the tok and secret value
+    if url_migrate:
+        tok_value, secret_value = asyncio.run(handler.fetch_migrate_with_tok(url_migrate))
+
+        # Proceed to send the POST request to /x/migrate and retrieve cookies
+        if tok_value and secret_value:
+            cookies = asyncio.run(handler.post_to_migrate(
+                cookies=(guest_id_marketing, guest_id_ads, personalization_id, guest_id),
+                tok_value=tok_value,
+                secret_value=secret_value
+            ))
+
+            # Fetch the login page and extract the gt_value
+            if cookies:
+                gt_value = asyncio.run(handler.fetch_login_page(cookies))
+
+                if gt_value:
+
+                    
+                    # Send the POST request to onboarding task endpoint
+                    response_json = asyncio.run(handler.post_onboarding_task(cookies, gt_value))
+
+                    # Display the JSON response and proceed with sending user identifier
+                    if response_json:
+                        # Prepare headers and cookies for the next request
+                        # Now run the post_user_identifier1
+                        response_json = asyncio.run(handler.post_user_identifier3())
+
